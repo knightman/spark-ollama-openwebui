@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "ollama": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "ollama-mcp"],
+      "env": {
+        "OLLAMA_HOST": "${SPARK_OLLAMA_HOST:-http://your-spark-hostname:11434}"
+      }
+    }
+  }
+}

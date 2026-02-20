@@ -205,13 +205,13 @@ Set these in your shell profile (`.zshrc`, `.bashrc`, etc.) or export them befor
 
 ```bash
 # Hostname or IP of your DGX Spark (default used by .mcp.json if unset)
-export SPARK_OLLAMA_HOST=http://spark1:11434
+export SPARK_OLLAMA_HOST=http://spark_ip_addr:11434
 
 # API key for ingest.py (generate in Open WebUI → Settings → Account → API Keys)
 export OPENWEBUI_API_KEY=sk-...
 ```
 
-If `SPARK_OLLAMA_HOST` is not set, `.mcp.json` defaults to `http://spark1:11434`.
+If `SPARK_OLLAMA_HOST` is not set, `.mcp.json` defaults to `http://spark_ip_addr:11434`.
 
 ## Deploy to Spark — `deploy.sh`
 
@@ -298,10 +298,10 @@ pip install requests
 export OPENWEBUI_API_KEY=sk-...
 
 # Upload an entire folder (creates a knowledge base named after the folder)
-./ingest.py /path/to/docs --url http://spark1:3000
+./ingest.py /path/to/docs --url http://spark_ip_addr:3000
 
 # Explicit knowledge-base name
-./ingest.py /path/to/docs --collection "my-project" --url http://spark1:3000
+./ingest.py /path/to/docs --collection "my-project" --url http://spark_ip_addr:3000
 
 # Preview without uploading
 ./ingest.py /path/to/docs --dry-run

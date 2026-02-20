@@ -1,0 +1,118 @@
+name: ollama-stack
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Ollama – model inference backend
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    runtime: nvidia          # requires NVIDIA Container Toolkit
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Increase context window ceiling available to models
+      - OLLAMA_MAX_LOADED_MODELS=3
+      - OLLAMA_NUM_PARALLEL=2
+      - OLLAMA_FLASH_ATTENTION=1   # enable flash attention where supported
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama   # model weights & blobs
+    networks:
+      - ollama_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Model pull – runs once to pre-download models, then exits
+  # Add or remove models from the command list as needed
+  # ---------------------------------------------------------------------------
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: ollama-pull
+    restart: "no"
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - OLLAMA_HOST=http://ollama:11434
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - ollama_net
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo ">>> Pulling gemma3:27b (multimodal, large context) ..."
+        ollama pull gemma3:27b
+
+        echo ">>> Pulling llama3.2-vision (multimodal, large context) ..."
+        ollama pull llama3.2-vision
+
+        echo ">>> Pulling nomic-embed-text (RAG embeddings) ..."
+        ollama pull nomic-embed-text
+
+        echo ">>> All models pulled successfully."
+
+  # ---------------------------------------------------------------------------
+  # Open WebUI – browser-based chat frontend with RAG support
+  # ---------------------------------------------------------------------------
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    restart: unless-stopped
+    ports:
+      - "3000:8080"
+    environment:
+      # Point WebUI at the Ollama backend
+      - OLLAMA_BASE_URL=http://ollama:11434
+      # Embedding model for RAG (must already be pulled)
+      - RAG_EMBEDDING_MODEL=nomic-embed-text
+      - RAG_EMBEDDING_ENGINE=ollama
+      # Enable multimodal image uploads in the UI
+      - ENABLE_IMAGE_GENERATION=false   # set true if you add a diffusion model
+      # Security – change these before exposing to a network
+      - WEBUI_SECRET_KEY=changeme_replace_with_strong_secret
+      # Storage paths inside the container
+      - DATA_DIR=/app/backend/data
+    volumes:
+      - webui_data:/app/backend/data
+    networks:
+      - ollama_net
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+# ---------------------------------------------------------------------------
+# Named volumes – data persists across container restarts/upgrades
+# ---------------------------------------------------------------------------
+volumes:
+  ollama_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      # Edit this path to point at your fast NVMe mount on the DGX Spark
+      device: /data/ollama
+  webui_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/open-webui
+
+# ---------------------------------------------------------------------------
+# Internal network – services talk to each other; only WebUI port is exposed
+# ---------------------------------------------------------------------------
+networks:
+  ollama_net:
+    driver: bridge

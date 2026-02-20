@@ -95,6 +95,7 @@ The script uploads each file, polls `GET /api/v1/files/{id}/process/status` unti
 | Ollama container (port 11434) | ✓ | |
 | Open WebUI container (port 3000) | ✓ | |
 | `ingest.py` | | ✓ |
+| `health-check.sh` | ✓ | |
 | `.mcp.json.example` / `.mcp.json` (Claude Code MCP config) | | ✓ |
 | `claude` CLI / Claude Code session | | ✓ |
 
@@ -141,6 +142,17 @@ SPARK_OLLAMA_HOST=http://192.168.1.50:11434 claude
 | `show` | Show model metadata / system prompt |
 | `copy` | Copy a model under a new name |
 | `remove` | Delete a model from the Spark |
+
+**Verify MCP end-to-end (inside a session):**
+
+Ask Claude to run two back-to-back checks — this exercises the full path from laptop through `ollama-mcp` to the Spark:
+
+```
+"List the Ollama models on the Spark"              → invokes list tool
+"Using gemma3:27b, write a hello-world bash line"  → invokes chat_completion
+```
+
+Both should return results. If `list` works but `chat_completion` hangs, the model may still be loading.
 
 **Troubleshooting checklist:**
 - `node` / `npx` installed on the laptop? (`node --version`)

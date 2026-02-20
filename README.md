@@ -22,6 +22,7 @@ Dev laptop  ──HTTP (port 3000)──►  DGX Spark: Open WebUI
 | `.mcp.json.example` | Template for the project-scoped MCP config (committed) | Dev laptop |
 | `.mcp.json` | Your local MCP config (not committed — copy from example) | Dev laptop |
 | `deploy.sh` | Rsync this project from the laptop to the Spark over SSH | Dev laptop |
+| `health-check.sh` | Verify Ollama and Open WebUI containers are up and responding | DGX Spark |
 
 ---
 
@@ -159,6 +160,21 @@ The DGX Spark's large unified memory pool means you can increase `OLLAMA_MAX_LOA
 
 ---
 
+## Health check
+
+`health-check.sh` verifies both containers are running and responding to HTTP. Run it on the Spark after starting the stack:
+
+```bash
+chmod +x health-check.sh   # once
+./health-check.sh
+# PASS: Ollama container healthy
+# PASS: Open WebUI container healthy
+```
+
+Exits `0` if both pass, `1` if either fails. Useful in scripts or after a reboot.
+
+---
+
 ## Useful server commands
 
 ```bash
@@ -195,7 +211,7 @@ docker compose down -v
 
 ## Prerequisites
 
-- **Node.js / npx** — required for the MCP server (`npx -y ollama-mcp`); any recent Node LTS works
+- **Node.js / npx** — required for the MCP server (`npx -y ollama-mcp`); any recent Node LTS works. Verify with `node --version` and `npx --version`. Install via [nodejs.org](https://nodejs.org) or `brew install node` on macOS.
 - **Python + requests** — required for `ingest.py` (`pip install requests`)
 - **Claude Code** — for MCP-based Ollama access from the terminal
 
@@ -240,7 +256,18 @@ The script uses `git ls-files` to determine what to copy, so new files must be s
 
 ## MCP configuration
 
-`.mcp.json` (gitignored) at the repo root configures Claude Code to connect to Ollama as an MCP server. Copy the example to get started:
+`.mcp.json` (gitignored) at the repo root configures Claude Code to connect to Ollama as an MCP server.
+
+**Prerequisite:** Node.js must be installed — the MCP server runs via `npx`.
+
+```bash
+node --version   # must print a version (e.g. v22.x.x)
+npx --version    # must print a version
+```
+
+If either command fails, install Node.js first: `brew install node` on macOS, or download from [nodejs.org](https://nodejs.org).
+
+Copy the example config to get started:
 
 ```bash
 cp .mcp.json.example .mcp.json
@@ -285,6 +312,24 @@ claude mcp list
 ```bash
 SPARK_OLLAMA_HOST=http://192.168.1.50:11434 claude
 ```
+
+**Verify MCP end-to-end with a quick test:**
+
+Once inside a Claude Code session with MCP connected, ask Claude to:
+
+1. List models on the Spark — invokes the `list` tool and returns what's loaded
+2. Send a test prompt to a model — invokes `chat_completion` and returns a response
+
+Example exchange:
+```
+You:    "List the Ollama models on the Spark"
+Claude: [calls list tool → returns gemma3:27b, llama3.2-vision, etc.]
+
+You:    "Using gemma3:27b, write a one-liner that prints today's date in bash"
+Claude: [calls chat_completion → model responds with: date +"%Y-%m-%d"]
+```
+
+If both steps work, the full MCP path (laptop → ollama-mcp → Spark → model → response) is confirmed.
 
 ## RAG ingestion — `ingest.py`
 

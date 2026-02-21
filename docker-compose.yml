@@ -6,7 +6,10 @@ services:
   # Ollama – model inference backend
   # ---------------------------------------------------------------------------
   ollama:
-    image: ollama/ollama:latest
+    #image: ollama/ollama:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.ollama
     container_name: ollama
     restart: unless-stopped
     runtime: nvidia          # requires NVIDIA Container Toolkit
@@ -21,6 +24,7 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama   # model weights & blobs
+      - hf_cache:/root/.cache/huggingface # map the new Hugging Face cache volume
     networks:
       - ollama_net
     healthcheck:
@@ -64,6 +68,27 @@ services:
         echo ">>> All models pulled successfully."
 
   # ---------------------------------------------------------------------------
+  # WebUI config seed – copies config.json into the data volume on first run
+  # ---------------------------------------------------------------------------
+  webui-init:
+    image: busybox:latest
+    container_name: webui-init
+    restart: "no"
+    volumes:
+      - webui_data:/data
+      - ./webui-config.json:/seed/config.json:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ -f /data/webui.db ]; then
+          echo ">>> Open WebUI database already exists – skipping config seed."
+        else
+          echo ">>> First run detected – seeding config.json into data volume ..."
+          cp /seed/config.json /data/config.json
+          echo ">>> Config seeded. Open WebUI will import it on startup."
+        fi
+
+  # ---------------------------------------------------------------------------
   # Open WebUI – browser-based chat frontend with RAG support
   # ---------------------------------------------------------------------------
   open-webui:
@@ -91,6 +116,8 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
+      webui-init:
+        condition: service_completed_successfully
 
 # ---------------------------------------------------------------------------
 # Named volumes – data persists across container restarts/upgrades
@@ -109,6 +136,13 @@ volumes:
       type: none
       o: bind
       device: /data/open-webui
+  hf_cache:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      # Create this directory on your host machine first
+      device: ${HF_DATA_PATH:-/data/huggingface}
 
 # ---------------------------------------------------------------------------
 # Internal network – services talk to each other; only WebUI port is exposed

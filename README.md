@@ -1,7 +1,9 @@
 # Ollama + Open WebUI on NVIDIA DGX Spark
 
+![generated_seaside_image](./Gemini_Generated_Image_nvidia_openwebui_ollama_docker_seaside.png)
+
 A self-hosted, GPU-accelerated stack for running context-aware multimodal LLMs.
-Ollama runs as the inference backend on a **DGX Spark**; you interact with it from a **dev laptop** via Open WebUI in a browser or via Claude Code over MCP.
+Ollama runs as the inference backend on a **DGX Spark**; you interact with it from a **dev laptop** via Open WebUI in a browser or via Claude Code over MCP. Everything runs in Docker stack.
 
 ```
 Dev laptop  ──MCP (port 11434)──►  DGX Spark: Ollama
@@ -14,9 +16,11 @@ Dev laptop  ──HTTP (port 3000)──►  DGX Spark: Open WebUI
 
 | File | Purpose | Runs on |
 |---|---|---|
-| `docker-compose.yml` | Full service definition (Ollama, model puller, Open WebUI) | DGX Spark |
+| `docker-compose.yml` | Full service definition (Ollama, model puller, WebUI init, Open WebUI) | DGX Spark |
+| `webui-config.json` | Open WebUI settings seed (applied on first run only) | DGX Spark |
 | `.env.example` | Template for environment variables | DGX Spark |
 | `.env` | Your local environment overrides (not committed) | DGX Spark |
+| `Dockerfile.ollama` | Custom Ollama image with Hugging Face CLI for GGUF imports | DGX Spark |
 | `setup.sh` | One-time host prep (directories, permissions, GPU check) | DGX Spark |
 | `ingest.py` | CLI helper to bulk-upload a local folder to Open WebUI for RAG | Dev laptop |
 | `openwebui_mcp.py` | MCP server exposing Open WebUI RAG as Claude Code tools | Dev laptop |
@@ -92,10 +96,11 @@ docker compose up -d
 ```
 
 Docker will:
-1. Pull the Ollama and Open WebUI images
+1. Build the custom Ollama image (from `Dockerfile.ollama`) and pull the Open WebUI image
 2. Start the Ollama backend
 3. Run the `ollama-pull` service to download all three models (this takes a few minutes depending on model sizes)
-4. Start Open WebUI once Ollama is healthy
+4. Run the `webui-init` service to seed Open WebUI settings (first run only — see [WebUI config seeding](#webui-config-seeding) below)
+5. Start Open WebUI once Ollama is healthy and config seeding is complete
 
 ### 5. Open the UI
 
@@ -114,14 +119,28 @@ Model weights and application data are stored in bind-mounted directories on the
 ```
 /data/ollama/        ← Ollama model blobs and manifests
 /data/open-webui/    ← WebUI database, uploaded docs, user config
+/data/huggingface/   ← Hugging Face cache (downloaded GGUF files)
 ```
 
-These paths are configurable via `OLLAMA_DATA_PATH` and `WEBUI_DATA_PATH` in `.env`.
+These paths are configurable via `OLLAMA_DATA_PATH`, `WEBUI_DATA_PATH`, and `HF_DATA_PATH` in `.env`.
 On a DGX Spark, point these at your fast NVMe mount (e.g. `/data`, `/mnt/nvme`) for best performance.
+
+## Default Models
+
+The ollama-pull service lists the default models to be pulled on first build. Refer to the ollama models page to find more.
+
+| Model Links |
+| --- |
+| [Gemma3](https://ollama.com/library/gemma3) |
+| [Llama3.2-Vision](https://ollama.com/library/llama3.2-vision) |
+| [Nomic Embed Text](https://ollama.com/library/nomic-embed-text) |
+| [Qwen3 Coder Next](https://ollama.com/library/qwen3-coder-next) |
 
 ---
 
 ## Adding more models
+
+### From the Ollama library
 
 Edit the `ollama-pull` service command in `docker-compose.yml`:
 
@@ -144,6 +163,23 @@ You can also pull models on demand from inside the Ollama container:
 
 ```bash
 docker exec -it ollama ollama pull <model-name>
+```
+
+### Custom GGUF models from Hugging Face
+
+The Ollama container includes the Hugging Face CLI (installed via `Dockerfile.ollama`), and the HF download cache is persisted at `HF_DATA_PATH` (default `/data/huggingface`).
+
+To import a GGUF model from Hugging Face:
+
+```bash
+# Download a GGUF file into the persistent cache
+docker exec -it ollama huggingface-cli download <repo-id> <filename.gguf> --local-dir /root/.cache/huggingface
+
+# Create an Ollama model from the GGUF file
+docker exec -it ollama bash -c 'echo "FROM /root/.cache/huggingface/<filename.gguf>" | ollama create <model-name>'
+
+# Verify it's available
+docker exec -it ollama ollama list
 ```
 
 ---
@@ -189,8 +225,17 @@ docker compose logs -f
 # Follow only model download progress
 docker compose logs -f ollama-pull
 
+# Enter the ollama container with interactive shell
+docker exec -it ollama /bin/bash
+
 # Check which models are loaded
 docker exec -it ollama ollama list
+
+# Pull a new model from ollama registry
+docker exec -it ollama ollama pull qwen3-coder-next
+
+# Test running a model directly in terminal
+docker exec -it ollama ollama run qwen3-coder-next
 
 # Stop the stack (data is preserved)
 docker compose down
@@ -206,6 +251,41 @@ docker compose down -v
 - **Change `WEBUI_SECRET_KEY`** before exposing the stack to any network — this key signs user sessions.
 - The WebUI port (3000) is bound to all interfaces by default. If the DGX Spark is network-accessible, consider binding to `127.0.0.1:3000` and using a reverse proxy (nginx/caddy) with TLS.
 - The Ollama API port (11434) is also exposed to the host. Firewall it if you don't need external API access.
+
+---
+
+## WebUI config seeding
+
+Open WebUI settings (signup policy, RAG parameters, web search, auth, etc.) are stored in its internal database. To avoid manual reconfiguration on every fresh deployment, this stack seeds a project-level config file on first boot.
+
+**How it works:**
+
+1. `webui-config.json` in the repo root contains the exported Open WebUI settings.
+2. The `webui-init` service (a lightweight `busybox` container) checks if `webui.db` already exists in the data volume.
+3. **First run:** copies `webui-config.json` into the volume as `config.json`. Open WebUI reads it on startup, imports the settings into its database, and renames it to `old_config.json`.
+4. **Subsequent runs:** `webui-init` detects the existing database and skips the copy — your live settings are never overwritten.
+
+**Key settings in the seed config:**
+
+| Setting | Value |
+|---|---|
+| User signup | Disabled (`enable_signup: false`) |
+| Default user role | `pending` (admin must approve) |
+| API keys | Enabled |
+| JWT expiry | 4 weeks |
+| RAG chunk size / overlap | 1000 / 100 |
+| RAG web search | Enabled (DuckDuckGo) |
+| Markdown header splitter | Enabled |
+| OpenAI connections | Disabled (Ollama-only) |
+
+**Updating the seed config:**
+
+1. Configure settings in the Open WebUI admin UI as desired
+2. Export: **Admin → Settings → Export** (downloads a JSON file)
+3. Replace `webui-config.json` in the repo with the new export
+4. Commit and redeploy
+
+> **Note:** The seed only applies to fresh deployments with no existing database. To re-apply on a running instance, either use the Admin UI import feature, or delete `webui.db` from the data volume (which resets all data including users and chats).
 
 ---
 

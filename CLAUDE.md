@@ -35,13 +35,14 @@ docker exec -it ollama ollama pull <model-name>
 
 ## Architecture
 
-Three Docker services on a shared bridge network (`ollama_net`):
+Four Docker services on a shared bridge network (`ollama_net`):
 
-- **ollama** — inference backend; exposes API on port 11434; data persisted to bind-mount at `OLLAMA_DATA_PATH` (default `/data/ollama`)
+- **ollama** — inference backend built from `Dockerfile.ollama` (adds Hugging Face CLI for GGUF imports); exposes API on port 11434; data persisted to bind-mount at `OLLAMA_DATA_PATH` (default `/data/ollama`); HF download cache at `HF_DATA_PATH` (default `/data/huggingface`)
 - **ollama-pull** — one-shot init container that pulls models after `ollama` is healthy, then exits (`restart: "no"`)
-- **open-webui** — browser UI on port 3000 (maps to internal 8080); depends on `ollama` being healthy; data at `WEBUI_DATA_PATH` (default `/data/open-webui`); uses the `ghcr.io/open-webui/open-webui:main` image
+- **webui-init** — one-shot init container that seeds `config.json` into the WebUI data volume on first run only (skips if `webui.db` already exists)
+- **open-webui** — browser UI on port 3000 (maps to internal 8080); depends on `ollama` being healthy and `webui-init` completing; data at `WEBUI_DATA_PATH` (default `/data/open-webui`); uses the `ghcr.io/open-webui/open-webui:main` image
 
-Both data volumes use `driver: local` with `o: bind` — they are bind mounts to host paths, not Docker-managed volumes, so model weights survive `docker compose down -v`.
+All three data volumes (`ollama_data`, `webui_data`, `hf_cache`) use `driver: local` with `o: bind` — they are bind mounts to host paths, not Docker-managed volumes, so model weights survive `docker compose down -v`.
 
 ## Configuration
 
@@ -50,7 +51,19 @@ All tunables live in `.env` (copy from `.env.example`). The `docker-compose.yml`
 Key variables:
 - `WEBUI_SECRET_KEY` — must be changed before network exposure
 - `OLLAMA_MAX_LOADED_MODELS` / `OLLAMA_NUM_PARALLEL` / `OLLAMA_FLASH_ATTENTION` — VRAM/throughput tuning
-- `OLLAMA_DATA_PATH` / `WEBUI_DATA_PATH` — point to fast NVMe on DGX Spark
+- `OLLAMA_DATA_PATH` / `WEBUI_DATA_PATH` / `HF_DATA_PATH` — point to fast NVMe on DGX Spark
+
+## WebUI config seeding
+
+`webui-config.json` contains the exported Open WebUI settings (UI preferences, RAG config, auth settings, etc.). The `webui-init` service copies this file into the data volume as `config.json` on first run only. Open WebUI reads it on startup, imports the settings into its database, and renames it to `old_config.json`.
+
+**Key settings in the seed config:**
+- Signup disabled (`ui.enable_signup: false`), default role `pending`
+- API keys enabled, JWT expiry 4 weeks
+- RAG: chunk size 1000, overlap 100, markdown header splitter enabled, DuckDuckGo web search enabled
+- OpenAI connections disabled (Ollama-only)
+
+**To update the seed config:** export from Open WebUI (Admin → Settings → Export), replace `webui-config.json`. The seed only applies to fresh deployments (no existing `webui.db`).
 
 ## Speech-to-text (Whisper)
 
@@ -60,7 +73,9 @@ To enable it, the `open-webui` service would need: image `ghcr.io/open-webui/ope
 
 ## Adding or swapping models
 
-Edit the `ollama-pull` service `command` block in `docker-compose.yml`, then run `docker compose up ollama-pull`. Browse available models at [ollama.com/library](https://ollama.com/library).
+**From Ollama library:** Edit the `ollama-pull` service `command` block in `docker-compose.yml`, then run `docker compose up ollama-pull`. Browse available models at [ollama.com/library](https://ollama.com/library).
+
+**Custom GGUF from Hugging Face:** The Ollama container includes the `huggingface-cli` (installed via `Dockerfile.ollama`). Download a GGUF file with `docker exec -it ollama huggingface-cli download <repo> <file.gguf> --local-dir /root/.cache/huggingface`, then create an Ollama model from it with `echo "FROM /root/.cache/huggingface/<file.gguf>" | ollama create <name>`. The HF cache is persisted at `HF_DATA_PATH`.
 
 ## Security
 
@@ -84,6 +99,7 @@ The script uploads each file, polls `GET /api/v1/files/{id}/process/status` unti
 | File / component | DGX Spark | Dev laptop |
 |---|---|---|
 | `docker-compose.yml` | ✓ | |
+| `Dockerfile.ollama` | ✓ | |
 | `.env.example` / `.env` | ✓ | |
 | `setup.sh` | ✓ | |
 | Ollama container (port 11434) | ✓ | |

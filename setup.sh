@@ -13,15 +13,18 @@ fi
 
 OLLAMA_DATA_PATH="${OLLAMA_DATA_PATH:-/data/ollama}"
 WEBUI_DATA_PATH="${WEBUI_DATA_PATH:-/data/open-webui}"
+HF_DATA_PATH="${HF_DATA_PATH:-/data/huggingface}"
 
 echo "==> Creating data directories..."
 sudo mkdir -p "$OLLAMA_DATA_PATH"
 sudo mkdir -p "$WEBUI_DATA_PATH"
+sudo mkdir -p "$HF_DATA_PATH"
 
 # Give the current user ownership so Docker bind-mounts work without root
-sudo chown -R "$USER":"$USER" "$OLLAMA_DATA_PATH" "$WEBUI_DATA_PATH"
+sudo chown -R "$USER":"$USER" "$OLLAMA_DATA_PATH" "$WEBUI_DATA_PATH" "$HF_DATA_PATH"
 echo "    $OLLAMA_DATA_PATH"
 echo "    $WEBUI_DATA_PATH"
+echo "    $HF_DATA_PATH"
 
 # ── Verify NVIDIA Container Toolkit ──────────────────────────────────────────
 echo ""

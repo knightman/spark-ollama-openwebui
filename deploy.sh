@@ -42,7 +42,12 @@ cd "$SCRIPT_DIR"
   | rsync -avz --files-from=- . "${REMOTE}:${SPARK_DEPLOY_DIR}/"
 
 echo ""
-echo "Done. Stack files are at ${REMOTE}:${SPARK_DEPLOY_DIR}"
+echo "Files synced to ${REMOTE}:${SPARK_DEPLOY_DIR}"
+
+# ── Restart the stack on the Spark ────────────────────────────────────────────
 echo ""
-echo "To start (or restart) the stack on the Spark:"
-echo "  ssh ${REMOTE} 'cd ${SPARK_DEPLOY_DIR} && docker compose up -d'"
+echo "Restarting the stack on ${SPARK_SSH_HOST} ..."
+ssh "$REMOTE" "cd ${SPARK_DEPLOY_DIR} && docker compose down && docker compose up -d"
+
+echo ""
+echo "Deploy complete. Open WebUI: http://${SPARK_SSH_HOST}:${WEBUI_PORT:-3000}"

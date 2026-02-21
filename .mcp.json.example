@@ -7,6 +7,16 @@
       "env": {
         "OLLAMA_HOST": "${SPARK_OLLAMA_HOST:-http://your-spark-hostname:11434}"
       }
+    },
+    "openwebui": {
+      "type": "stdio",
+      "command": "/opt/homebrew/Caskroom/miniconda/base/envs/openwebui-mcp/bin/python",
+      "args": ["openwebui_mcp.py"],
+      "env": {
+        "OPENWEBUI_URL": "${OPENWEBUI_URL:-http://your-spark-hostname:3000}",
+        "OPENWEBUI_API_KEY": "${OPENWEBUI_API_KEY}",
+        "OPENWEBUI_DEFAULT_MODEL": "gemma3:27b"
+      }
     }
   }
 }

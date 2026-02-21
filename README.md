@@ -19,6 +19,8 @@ Dev laptop  ──HTTP (port 3000)──►  DGX Spark: Open WebUI
 | `.env` | Your local environment overrides (not committed) | DGX Spark |
 | `setup.sh` | One-time host prep (directories, permissions, GPU check) | DGX Spark |
 | `ingest.py` | CLI helper to bulk-upload a local folder to Open WebUI for RAG | Dev laptop |
+| `openwebui_mcp.py` | MCP server exposing Open WebUI RAG as Claude Code tools | Dev laptop |
+| `.claude/commands/rag.md` | `/rag` slash command for RAG queries inside Claude Code | Dev laptop |
 | `.mcp.json.example` | Template for the project-scoped MCP config (committed) | Dev laptop |
 | `.mcp.json` | Your local MCP config (not committed — copy from example) | Dev laptop |
 | `deploy.sh` | Rsync this project from the laptop to the Spark over SSH | Dev laptop |
@@ -211,23 +213,23 @@ docker compose down -v
 
 ## Prerequisites
 
-- **Node.js / npx** — required for the MCP server (`npx -y ollama-mcp`); any recent Node LTS works. Verify with `node --version` and `npx --version`. Install via [nodejs.org](https://nodejs.org) or `brew install node` on macOS.
-- **Python + requests** — required for `ingest.py` (`pip install requests`)
-- **Claude Code** — for MCP-based Ollama access from the terminal
+- **Node.js / npx** — required for `ollama-mcp` (`npx -y ollama-mcp`); any recent Node LTS works. Verify with `node --version`. Install via [nodejs.org](https://nodejs.org) or `brew install node` on macOS.
+- **conda** — required for `openwebui_mcp.py` (the RAG MCP server). Install via [docs.conda.io](https://docs.conda.io) or `brew install miniconda` on macOS.
+- **Claude Code** — for MCP-based Ollama and RAG access from the terminal
 
 ## Environment variables
 
-Set these in your shell profile (`.zshrc`, `.bashrc`, etc.) or export them before starting Claude Code:
+Set these in your shell profile (`.zshrc`, `.bashrc`, etc.) or in `.env`:
 
 ```bash
-# Hostname or IP of your DGX Spark (default used by .mcp.json if unset)
-export SPARK_OLLAMA_HOST=http://spark_ip_addr:11434
-
-# API key for ingest.py (generate in Open WebUI → Settings → Account → API Keys)
-export OPENWEBUI_API_KEY=sk-...
+export SPARK_OLLAMA_HOST=http://<your-spark-hostname>:11434   # used by ollama-mcp
+export OPENWEBUI_API_KEY=sk-...                               # Open WebUI → Settings → Account → API Keys
+export OPENWEBUI_URL=http://<your-spark-hostname>:3000        # used by openwebui_mcp.py and ingest.py
 ```
 
-If `SPARK_OLLAMA_HOST` is not set, `.mcp.json` defaults to `http://spark_ip_addr:11434`.
+`OPENWEBUI_API_KEY` and `OPENWEBUI_URL` can also be set in `.env` — `openwebui_mcp.py` loads it automatically.
+
+> **Getting an API key from Open WebUI:** API key creation is not enabled by default. You must first create a **Group** (Admin Panel → Groups) that has API key permissions enabled, then add your user to that group — even if your account is already an Admin. Once the group is configured, navigate to **Settings → Account → API Keys**, click "Show", and create a new key. You'll need to manually copy the key from the UI. See [this discussion](https://github.com/open-webui/open-webui/discussions/19854) for more details. Full admin docs are at [docs.openwebui.com](https://docs.openwebui.com).
 
 ## Deploy to Spark — `deploy.sh`
 
@@ -273,7 +275,7 @@ Copy the example config to get started:
 cp .mcp.json.example .mcp.json
 ```
 
-The file contents:
+The file registers two MCP servers:
 
 ```json
 {
@@ -285,26 +287,44 @@ The file contents:
       "env": {
         "OLLAMA_HOST": "${SPARK_OLLAMA_HOST:-http://your-spark-hostname:11434}"
       }
+    },
+    "openwebui": {
+      "type": "stdio",
+      "command": "/opt/homebrew/Caskroom/miniconda/base/envs/openwebui-mcp/bin/python",
+      "args": ["openwebui_mcp.py"],
+      "env": {
+        "OPENWEBUI_URL": "${OPENWEBUI_URL:-http://your-spark-hostname:3000}",
+        "OPENWEBUI_API_KEY": "${OPENWEBUI_API_KEY}",
+        "OPENWEBUI_DEFAULT_MODEL": "gemma3:27b"
+      }
     }
   }
 }
 ```
 
-Set `SPARK_OLLAMA_HOST` in your shell profile (or edit the hostname directly in `.mcp.json`). Claude Code will prompt for approval the first time it loads this project-scoped config.
+Adjust the conda python path if your miniconda is installed elsewhere (`which python` inside the activated env).
 
-**Verify the MCP server is registered:**
+**One-time conda setup for `openwebui_mcp.py`:**
 
 ```bash
-# From the project directory
-claude mcp list
-# Should show: ollama
+conda create -n openwebui-mcp python=3.11 -y
+conda activate openwebui-mcp
+pip install mcp requests python-dotenv
 ```
 
-**Verify it connects inside a session:**
+**Verify both MCP servers are registered:**
+
+```bash
+claude mcp list
+# Should show: ollama, openwebui
+```
+
+**Verify they connect inside a session:**
 
 ```
 /mcp
-# Should show: ollama  Connected
+# Should show: ollama     Connected
+#              openwebui  Connected
 ```
 
 **To override the Spark hostname for a session:**
@@ -343,10 +363,10 @@ pip install requests
 export OPENWEBUI_API_KEY=sk-...
 
 # Upload an entire folder (creates a knowledge base named after the folder)
-./ingest.py /path/to/docs --url http://spark_ip_addr:3000
+./ingest.py /path/to/docs --url http://<your-spark-hostname>:3000
 
 # Explicit knowledge-base name
-./ingest.py /path/to/docs --collection "my-project" --url http://spark_ip_addr:3000
+./ingest.py /path/to/docs --collection "my-project" --url http://<your-spark-hostname>:3000
 
 # Preview without uploading
 ./ingest.py /path/to/docs --dry-run
@@ -401,6 +421,27 @@ Example prompts:
 - Upload a chart → *"Summarize the trends in this chart"*
 - Upload a photo → *"Describe what you see and identify any text"*
 
+## Speech-to-text (Whisper)
+
+> **Not currently enabled.** The Whisper STT integration was removed from the active configuration. It is a candidate for future enhancement.
+
+Open WebUI supports GPU-accelerated speech-to-text via `faster-whisper` running locally inside the container — no external API required. To enable it in a future iteration, the `open-webui` service would need:
+
+- Image: `ghcr.io/open-webui/open-webui:cuda` (includes CUDA libraries)
+- `runtime: nvidia` on the service so the GPU is visible inside the container
+- The following environment variables:
+
+| Variable | Example value | Notes |
+|---|---|---|
+| `ENABLE_AUDIO_TRANSCRIPTION` | `True` | Turns on the STT feature |
+| `WHISPER_MODEL` | `large-v3` | ~3 GB, downloaded from HuggingFace on first use |
+| `WHISPER_COMPUTE_TYPE` | `float16` | GPU mode; use `int8` for CPU-only |
+| `DEVICE_TYPE` | `cuda` | Tells Open WebUI to use the GPU |
+
+The model would be cached at `/data/open-webui/cache/whisper/models` and persist across container upgrades.
+
+---
+
 ## RAG document chat
 
 Open WebUI has built-in RAG support using `nomic-embed-text` for embeddings.
@@ -415,3 +456,35 @@ Open WebUI has built-in RAG support using `nomic-embed-text` for embeddings.
 
 To configure the embedding model:
 **Settings → Admin → Documents → Embedding Model** → set to `nomic-embed-text`
+
+---
+
+## RAG via Claude Code + MCP
+
+`openwebui_mcp.py` exposes Open WebUI's RAG pipeline as native MCP tools, so Claude Code can query your knowledge collections directly from a session.
+
+**Available tools** (exposed by `openwebui` MCP server):
+
+| Tool | What it does |
+|---|---|
+| `list_collections` | List knowledge base collections in Open WebUI |
+| `rag_query` | Answer a question via vector search + context injection + Ollama |
+
+**Usage in a Claude Code session:**
+
+```
+"List my Open WebUI knowledge collections"
+→ invokes list_collections
+
+"Using my project-docs collection, what are the deployment steps?"
+→ invokes rag_query(question=..., collection_name="project-docs")
+```
+
+**`/rag` slash command** — shorthand that routes through the MCP tools automatically:
+
+```
+/rag what are the network requirements?
+/rag summarize the architecture in collection project-docs
+```
+
+If no collection name is given, Claude will call `list_collections` first and ask which to use.

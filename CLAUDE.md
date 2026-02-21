@@ -39,7 +39,7 @@ Three Docker services on a shared bridge network (`ollama_net`):
 
 - **ollama** — inference backend; exposes API on port 11434; data persisted to bind-mount at `OLLAMA_DATA_PATH` (default `/data/ollama`)
 - **ollama-pull** — one-shot init container that pulls models after `ollama` is healthy, then exits (`restart: "no"`)
-- **open-webui** — browser UI on port 3000 (maps to internal 8080); depends on `ollama` being healthy; data at `WEBUI_DATA_PATH` (default `/data/open-webui`)
+- **open-webui** — browser UI on port 3000 (maps to internal 8080); depends on `ollama` being healthy; data at `WEBUI_DATA_PATH` (default `/data/open-webui`); uses the `ghcr.io/open-webui/open-webui:main` image
 
 Both data volumes use `driver: local` with `o: bind` — they are bind mounts to host paths, not Docker-managed volumes, so model weights survive `docker compose down -v`.
 
@@ -52,17 +52,11 @@ Key variables:
 - `OLLAMA_MAX_LOADED_MODELS` / `OLLAMA_NUM_PARALLEL` / `OLLAMA_FLASH_ATTENTION` — VRAM/throughput tuning
 - `OLLAMA_DATA_PATH` / `WEBUI_DATA_PATH` — point to fast NVMe on DGX Spark
 
-## RAG ingestion helper (`ingest.py`)
+## Speech-to-text (Whisper)
 
-`ingest.py` bulk-uploads a local folder to Open WebUI's knowledge base API for RAG. It requires only `requests` (`pip install requests`) and an API key generated from Open WebUI → Settings → Account → API Keys (set as `OPENWEBUI_API_KEY`).
+Not currently enabled — removed from the active configuration. Future enhancement opportunity.
 
-The script uploads each file, polls `GET /api/v1/files/{id}/process/status` until processing completes, then calls `POST /api/v1/knowledge/{id}/file/add`. It creates the knowledge base if it doesn't exist.
-
-```bash
-./ingest.py /path/to/docs                        # collection name = folder name
-./ingest.py /path/to/docs --collection "name"    # explicit collection
-./ingest.py /path/to/docs --dry-run              # preview only
-```
+To enable it, the `open-webui` service would need: image `ghcr.io/open-webui/open-webui:cuda`, `runtime: nvidia`, and env vars `ENABLE_AUDIO_TRANSCRIPTION=True`, `WHISPER_MODEL=large-v3`, `WHISPER_COMPUTE_TYPE=float16`, `DEVICE_TYPE=cuda`.
 
 ## Adding or swapping models
 
@@ -75,13 +69,13 @@ Edit the `ollama-pull` service `command` block in `docker-compose.yml`, then run
 
 ## RAG ingestion helper (`ingest.py`)
 
-`ingest.py` runs on the **dev laptop** and talks to Open WebUI over HTTP. It requires only `requests` (`pip install requests`) and an API key from Open WebUI → Settings → Account → API Keys (set as `OPENWEBUI_API_KEY`). Pass `--url http://spark1:3000` (or whatever hostname/IP the Spark is reachable at).
+`ingest.py` runs on the **dev laptop** and talks to Open WebUI over HTTP. It requires only `requests` (`pip install requests`) and an API key from Open WebUI → Settings → Account → API Keys (set as `OPENWEBUI_API_KEY`). Pass `--url http://<your-spark-hostname>:3000`.
 
 The script uploads each file, polls `GET /api/v1/files/{id}/process/status` until processing completes, then calls `POST /api/v1/knowledge/{id}/file/add`. It creates the knowledge base if it doesn't exist.
 
 ```bash
-./ingest.py /path/to/docs --url http://spark1:3000                        # collection name = folder name
-./ingest.py /path/to/docs --url http://spark1:3000 --collection "name"    # explicit collection
+./ingest.py /path/to/docs --url http://<your-spark-hostname>:3000                        # collection name = folder name
+./ingest.py /path/to/docs --url http://<your-spark-hostname>:3000 --collection "name"    # explicit collection
 ./ingest.py /path/to/docs --dry-run                                       # preview only
 ```
 
@@ -107,22 +101,23 @@ The script uploads each file, polls `GET /api/v1/files/{id}/process/status` unti
 cp .mcp.json.example .mcp.json   # then set SPARK_OLLAMA_HOST or edit the hostname
 ```
 
-**Shell env var:** set `SPARK_OLLAMA_HOST` in your shell profile; `.mcp.json` passes it through as `OLLAMA_HOST`. If unset, the default `http://spark1:11434` is used.
+**Shell env var:** set `SPARK_OLLAMA_HOST` in your shell profile; `.mcp.json` passes it through as `OLLAMA_HOST`. Required — no default is assumed.
 
 ```bash
-export SPARK_OLLAMA_HOST=http://spark1:11434   # or IP address
+export SPARK_OLLAMA_HOST=http://<your-spark-hostname>:11434   # or IP address
 ```
 
 **Verify registration (outside a session):**
 
 ```bash
-claude mcp list        # should list: ollama
+claude mcp list        # should list: ollama, openwebui
 ```
 
 **Verify connection (inside a session):**
 
 ```
 /mcp               # should show: ollama  Connected
+                   #               openwebui  Connected
 ```
 
 **Override hostname for one session:**
@@ -143,6 +138,40 @@ SPARK_OLLAMA_HOST=http://192.168.1.50:11434 claude
 | `copy` | Copy a model under a new name |
 | `remove` | Delete a model from the Spark |
 
+**MCP tools exposed by `openwebui` (`openwebui_mcp.py`):**
+
+| Tool | What it does |
+|---|---|
+| `list_collections` | List knowledge base collections in Open WebUI |
+| `rag_query` | Answer a question via RAG search over a named collection |
+
+**Required env vars for `openwebui` MCP:**
+
+```bash
+export OPENWEBUI_API_KEY=sk-...                           # WebUI → Settings → Account → API Keys
+export OPENWEBUI_URL=http://<your-spark-hostname>:3000    # or set in .env
+```
+
+**Setup (one-time, on dev laptop):**
+
+```bash
+conda create -n openwebui-mcp python=3.11 -y
+conda activate openwebui-mcp
+pip install mcp requests python-dotenv
+```
+
+**Custom slash command:**
+
+```
+/rag <question> [in collection <name>]
+```
+
+Examples:
+```
+/rag what are the network requirements?
+/rag summarize the architecture in collection project-docs
+```
+
 **Verify MCP end-to-end (inside a session):**
 
 Ask Claude to run two back-to-back checks — this exercises the full path from laptop through `ollama-mcp` to the Spark:
@@ -156,7 +185,7 @@ Both should return results. If `list` works but `chat_completion` hangs, the mod
 
 **Troubleshooting checklist:**
 - `node` / `npx` installed on the laptop? (`node --version`)
-- Spark reachable from laptop? (`curl http://spark1:11434/api/tags`)
+- Spark reachable from laptop? (`curl http://<your-spark-hostname>:11434/api/tags`)
 - Ollama container running on Spark? (`docker compose ps` on the Spark)
 - `SPARK_OLLAMA_HOST` set correctly in the shell that launched `claude`?
 
